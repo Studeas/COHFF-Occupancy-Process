@@ -19,11 +19,11 @@ def voxelize_point_cloud(pcd_path, voxel_size=(200, 200, 16), verbose=False):
         # Predefined coordinate ranges
         x_range = [-40.0, 40.0]
         y_range = [-40.0, 40.0]
-        z_range = [-2.0, 4.4] 
+        # z_range = [-2.0, 4.4] 
+        z_range = [-3.2, 3.2] # 大约保证ego vehicle在体素网格最中心位置
         # Point cloud is already in ego coordinates, ground z-value is approximately less than -1
         # Voxel resolution is 0.4m, ground should be around the third voxel
-        # Therefore, lower bound is set to -2, upper bound to 4.4, total length is 6.4m
-        # Hence, z_range = [-2, 4.4]
+        # Hence, z_range = [-3.2, 3.2]  
         
         # Calculate voxel size for each dimension
         voxel_x = (x_range[1] - x_range[0]) / voxel_size[0]
@@ -46,7 +46,7 @@ def voxelize_point_cloud(pcd_path, voxel_size=(200, 200, 16), verbose=False):
         
         # Read data and perform voxelization
         for line in lines[header_end:]:
-            values = line.strip().split()
+            values = line.strip().split() 
             if len(values) >= 4:
                 x, y, z = float(values[0]), float(values[1]), float(values[2])
                 label = int(values[3])  # Fourth column is label value
@@ -70,6 +70,7 @@ def voxelize_point_cloud(pcd_path, voxel_size=(200, 200, 16), verbose=False):
         
         # Initialize final voxel grid
         occ_label = np.zeros(voxel_size, dtype=np.uint8)
+        # occ_label shape: (200, 200, 16), numpy array
         
         # Select most frequent label for each voxel
         for (x_idx, y_idx, z_idx), label_counts in voxel_labels.items():

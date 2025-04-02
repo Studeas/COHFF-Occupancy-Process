@@ -141,10 +141,10 @@ def plot_all_pcd_z_distribution(folder_path):
 
 if __name__ == "__main__":
     # Set folder path to analyze
-    folder_path0 = r"C:\Users\TUF\Desktop\opv2v_process\single_data_example\2021_08_18_19_48_05\1045_cropped"
+    folder_path0 = r"C:\Users\TUF\Desktop\backup\data_example\validate\2021_08_18_19_48_05\1045"
     
     # Analyze and plot distribution
     plot_all_pcd_z_distribution(folder_path0)
 
-    folder_path1 = r"C:\Users\TUF\Desktop\opv2v_process\single_data_example\2021_08_18_19_48_05\1045"
-    plot_all_pcd_z_distribution(folder_path1)
+    # folder_path1 = r"C:\Users\TUF\Desktop\opv2v_process\single_data_example\2021_08_18_19_48_05\1045"
+    # plot_all_pcd_z_distribution(folder_path1)

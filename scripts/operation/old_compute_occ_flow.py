@@ -18,17 +18,17 @@ def read_yaml_file(yaml_path, verbose=False):
 
 def compute_flow(current_yaml_path, next_yaml_path, voxel_npz_path, verbose=False):
     """
-    Compute flow (flow field) between adjacent frames using vectorized operations.
+    Compute flow (flow field) between adjacent frames
 
     Args:
-        current_yaml_path: Path to current frame YAML file.
-        next_yaml_path: Path to next frame YAML file.
-        voxel_npz_path: Path to voxel NPZ file.
-        verbose: Whether to output detailed logs.
+        current_yaml_path: Path to current frame YAML file
+        next_yaml_path: Path to next frame YAML file
+        voxel_npz_path: Path to voxel NPZ file
+        verbose: Whether to output detailed logs
 
     Returns:
         Tuple: (dynamic_flow_forward, dynamic_flow_backward, static_flow_forward, static_flow_backward)
-        Each array has shape (200, 200, 16, 3).
+        Each array has shape (200, 200, 16, 3)
     """
     try:
         # Load YAML data for current and next frames
@@ -37,7 +37,7 @@ def compute_flow(current_yaml_path, next_yaml_path, voxel_npz_path, verbose=Fals
         if current_data is None or next_data is None:
             return None, None, None, None
 
-        # Check and extract lidar_pose information (using lidar_pose as ego pose)
+        # Check and extract lidar_pose information
         if 'lidar_pose' not in current_data or len(current_data['lidar_pose']) < 6:
             if verbose:
                 logging.error(f"Error: Current YAML file missing or invalid lidar_pose. File: {current_yaml_path}")
@@ -78,44 +78,23 @@ def compute_flow(current_yaml_path, next_yaml_path, voxel_npz_path, verbose=Fals
 
         # Load voxel data
         voxel_data = np.load(voxel_npz_path)
-        occ_label = voxel_data['occ_label']  # 虽然不作为条件过滤，每个体素都要计算流向
+        occ_label = voxel_data['occ_label']
 
-        # 生成整个体素网格物理坐标 (200,200,16,3)
-        xs = (np.arange(200) - 100) * 0.4
-        ys = (np.arange(200) - 100) * 0.4
-        zs = (np.arange(16) - 8) * 0.4
-        grid_x, grid_y, grid_z = np.meshgrid(xs, ys, zs, indexing='ij')
-        coords = np.stack([grid_x, grid_y, grid_z], axis=-1)  # (200,200,16,3)
+        # Initialize flow field arrays
+        dynamic_flow_forward = np.zeros((200, 200, 16, 3), dtype=np.float32)
+        dynamic_flow_backward = np.zeros((200, 200, 16, 3), dtype=np.float32)
+        static_flow_forward = np.zeros((200, 200, 16, 3), dtype=np.float32)
+        static_flow_backward = np.zeros((200, 200, 16, 3), dtype=np.float32)
 
-        # 扩展为齐次坐标，形状 (200,200,16,4)
-        ones = np.ones_like(grid_x)
-        coords_hom = np.concatenate([coords, ones[..., np.newaxis]], axis=-1)
-        N = 200 * 200 * 16
-        coords_hom_flat = coords_hom.reshape(N, 4)  # (N,4)
-        coords_xyz_flat = coords_hom_flat[:, :3]  # (N,3)
-
-        # 向量化计算静态流
-        static_forward_coords = (static_forward_transform @ coords_hom_flat.T).T  # (N,4)
-        static_backward_coords = (static_backward_transform @ coords_hom_flat.T).T  # (N,4)
-        static_flow_forward_flat = static_forward_coords[:, :3] - coords_xyz_flat  # (N,3)
-        static_flow_backward_flat = static_backward_coords[:, :3] - coords_xyz_flat  # (N,3)
-        static_flow_forward = static_flow_forward_flat.reshape(200, 200, 16, 3)
-        static_flow_backward = static_flow_backward_flat.reshape(200, 200, 16, 3)
-
-        # 初始化动态流（全部为0，后续对车辆区域进行更新），形状 (N,3)
-        dynamic_flow_forward_flat = np.zeros((N, 3), dtype=np.float32)
-        dynamic_flow_backward_flat = np.zeros((N, 3), dtype=np.float32)
-        dynamic_assigned = np.zeros(N, dtype=bool)
-
-        # 提取车辆注释：仅处理同时在当前帧与下一帧中出现的车辆
+        # Extract vehicle annotation information from YAML data (current and next frames)
         current_vehicles = current_data.get('vehicles', {})
         next_vehicles = next_data.get('vehicles', {})
-        common_vehicle_tokens = set(current_vehicles.keys()).intersection(set(next_vehicles.keys()))
 
-        # 预先计算每个车辆的动态变换矩阵（正向和反向）及车辆当前位置信息
-        vehicle_dyn_forward = {}
-        vehicle_dyn_backward = {}
-        veh_locations = {}
+        # 预先计算同时出现在两个帧中的车辆的变换矩阵及其位置，避免重复计算
+        common_vehicle_tokens = set(current_vehicles.keys()).intersection(set(next_vehicles.keys()))
+        veh_locations = {}  # 当前帧车辆位置，用于距离判断
+        vehicle_dyn_forward = {}  # 预先计算的动态正向变换
+        vehicle_dyn_backward = {} # 预先计算的动态反向变换
         for token in common_vehicle_tokens:
             veh_curr = current_vehicles[token]
             veh_next = next_vehicles[token]
@@ -140,36 +119,72 @@ def compute_flow(current_yaml_path, next_yaml_path, voxel_npz_path, verbose=Fals
 
             veh_locations[token] = np.array(veh_curr.get('location', [0, 0, 0]))
 
-            # 预先计算动态转换矩阵
+            # 预先计算动态变换矩阵（正向和反向）
             dyn_forward = np.linalg.inv(T_e_next) @ T_v_next @ np.linalg.inv(T_v_current) @ T_e_current
             dyn_backward = np.linalg.inv(T_e_current) @ T_v_current @ np.linalg.inv(T_v_next) @ T_e_next
             vehicle_dyn_forward[token] = dyn_forward
             vehicle_dyn_backward[token] = dyn_backward
 
-        # 对每个车辆，根据其位置生成布尔 mask，然后批量计算动态流
-        for token in common_vehicle_tokens:
-            veh_loc = veh_locations[token]  # 当前帧车辆位置，形状 (3,)
-            # 计算所有体素到该车辆位置的距离，形状 (N,)
-            dists = np.linalg.norm(coords_xyz_flat - veh_loc, axis=1)
-            mask = dists < 5.0  # 阈值5米
-            # 仅更新那些尚未分配过动态流的体素
-            mask = mask & (~dynamic_assigned)
-            if np.any(mask):
-                # 正向动态流
-                dyn_forward = vehicle_dyn_forward[token]
-                new_coords_forward = (dyn_forward @ coords_hom_flat[mask].T).T  # (n,4)
-                dyn_flow_forward = new_coords_forward[:, :3] - coords_xyz_flat[mask]
-                dynamic_flow_forward_flat[mask] = dyn_flow_forward
-                # 反向动态流
-                dyn_backward = vehicle_dyn_backward[token]
-                new_coords_backward = (dyn_backward @ coords_hom_flat[mask].T).T
-                dyn_flow_backward = new_coords_backward[:, :3] - coords_xyz_flat[mask]
-                dynamic_flow_backward_flat[mask] = dyn_flow_backward
-                dynamic_assigned[mask] = True
+        # 遍历整个 200×200×16 的体素网格（遍历所有体素）
+        total_voxels = 200 * 200 * 16
+        for idx in tqdm(np.ndindex((200, 200, 16)), total=total_voxels, desc="Processing voxels"):
+            x, y, z = idx
+            # 将体素索引转换为以 ego 坐标系表示的物理坐标（单位：米）
+            voxel_pos = np.array([
+                (x - 100) * 0.4,
+                (y - 100) * 0.4,
+                (z - 8) * 0.4
+            ])
+            voxel_hom = np.append(voxel_pos, 1)  # 扩充为齐次坐标
 
-        # 将动态流重新 reshape 成 (200,200,16,3)
-        dynamic_flow_forward = dynamic_flow_forward_flat.reshape(200, 200, 16, 3)
-        dynamic_flow_backward = dynamic_flow_backward_flat.reshape(200, 200, 16, 3)
+            # 判断该体素是否在某车辆附近（阈值5米），遍历所有预先计算的车辆
+            is_vehicle = False
+            vehicle_token = None
+            for token, veh_loc in veh_locations.items():
+                if np.linalg.norm(voxel_pos - veh_loc) < 5.0:
+                    is_vehicle = True
+                    vehicle_token = token
+                    break
+
+            if is_vehicle:
+                # 使用预先计算的车辆动态变换矩阵
+                dyn_forward = vehicle_dyn_forward[vehicle_token]
+                dyn_backward = vehicle_dyn_backward[vehicle_token]
+
+                # 正向动态流
+                next_voxel_hom = dyn_forward @ voxel_hom
+                next_voxel = next_voxel_hom[:3]
+                next_x = int(next_voxel[0] / 0.4 + 100)
+                next_y = int(next_voxel[1] / 0.4 + 100)
+                next_z = int(next_voxel[2] / 0.4 + 8)
+                if 0 <= next_x < 200 and 0 <= next_y < 200 and 0 <= next_z < 16:
+                    dynamic_flow_forward[x, y, z] = next_voxel - voxel_pos
+
+                # 反向动态流
+                prev_voxel_hom = dyn_backward @ voxel_hom
+                prev_voxel = prev_voxel_hom[:3]
+                prev_x = int(prev_voxel[0] / 0.4 + 100)
+                prev_y = int(prev_voxel[1] / 0.4 + 100)
+                prev_z = int(prev_voxel[2] / 0.4 + 8)
+                if 0 <= prev_x < 200 and 0 <= prev_y < 200 and 0 <= prev_z < 16:
+                    dynamic_flow_backward[x, y, z] = prev_voxel - voxel_pos
+            else:
+                # 对于静态物体，仅考虑ego运动
+                next_voxel_hom = static_forward_transform @ voxel_hom
+                next_voxel = next_voxel_hom[:3]
+                next_x = int(next_voxel[0] / 0.4 + 100)
+                next_y = int(next_voxel[1] / 0.4 + 100)
+                next_z = int(next_voxel[2] / 0.4 + 8)
+                if 0 <= next_x < 200 and 0 <= next_y < 200 and 0 <= next_z < 16:
+                    static_flow_forward[x, y, z] = next_voxel - voxel_pos
+
+                prev_voxel_hom = static_backward_transform @ voxel_hom
+                prev_voxel = prev_voxel_hom[:3]
+                prev_x = int(prev_voxel[0] / 0.4 + 100)
+                prev_y = int(prev_voxel[1] / 0.4 + 100)
+                prev_z = int(prev_voxel[2] / 0.4 + 8)
+                if 0 <= prev_x < 200 and 0 <= prev_y < 200 and 0 <= prev_z < 16:
+                    static_flow_backward[x, y, z] = prev_voxel - voxel_pos
 
         if verbose:
             logging.info(f"Successfully computed flows with shapes: dynamic_forward={dynamic_flow_forward.shape}, "
@@ -183,7 +198,7 @@ def compute_flow(current_yaml_path, next_yaml_path, voxel_npz_path, verbose=Fals
 
 def compute_occ_flow(current_yaml_path, next_yaml_path, voxel_npz_path, verbose=False):
     """
-    Compute occupancy flow between adjacent frames.
+    Compute occupancy flow between adjacent frames
     """
     result = compute_flow(current_yaml_path, next_yaml_path, voxel_npz_path, verbose)
     return result

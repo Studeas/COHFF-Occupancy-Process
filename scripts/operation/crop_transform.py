@@ -54,7 +54,7 @@ def write_pcd_file(pcd_path, header, points, labels):
         for point, label in zip(points, labels):
             f.write(f"{point[0]} {point[1]} {point[2]} {int(label)}\n")
 
-def read_yaml_file(yaml_path):
+def get_zdiff_egolidar(yaml_path):
     """Read YAML file and get z-value difference between true_ego_pos and lidar_pose"""
     try:
         with open(yaml_path, 'r') as f:
@@ -89,30 +89,30 @@ def read_yaml_file(yaml_path):
         return None
 
 def crop_pcd(points, labels, x_range=(-40, 40), y_range=(-40, 40), z_diff=0):
-    """Crop point cloud data and translate z-axis
+    """裁剪点云数据并平移z轴
     
     Args:
-        points: Point cloud coordinate array
-        labels: Label array
-        x_range: x-coordinate range, default (-40, 40)
-        y_range: y-coordinate range, default (-40, 40)
-        z_diff: z-value difference from lidar_pose to true_ego_pos (positive value means translate downward)
+        points: 点云坐标数组
+        labels: 标签数组
+        x_range: x坐标范围，默认(-40, 40)
+        y_range: y坐标范围，默认(-40, 40)
+        z_diff: 从lidar_pose到true_ego_pos的z值差值（正值表示向下平移）
     
     Returns:
-        Cropped and transformed point cloud coordinates and labels
+        裁剪后的点云坐标和标签
     """
-    # Create mask for cropping
+    # 创建裁剪掩码
     x_mask = (points[:, 0] >= x_range[0]) & (points[:, 0] <= x_range[1])
     y_mask = (points[:, 1] >= y_range[0]) & (points[:, 1] <= y_range[1])
     mask = x_mask & y_mask
     
-    # Apply mask
+    # 应用掩码
     cropped_points = points[mask]
     cropped_labels = labels[mask]
     
-    # Apply z-axis translation (translate downward, so subtract z_diff)
+    # 应用z轴平移（向下平移，所以减去z_diff）
     cropped_points[:, 2] -= z_diff
-    
+
     return cropped_points, cropped_labels
 
 def process_folder(input_folder, output_folder):
@@ -145,7 +145,7 @@ def process_folder(input_folder, output_folder):
     # Process each file
     for pcd_file, yaml_file in tqdm(zip(pcd_files, yaml_files), desc="Processing files"):
         # Read YAML file to get z-value difference
-        z_diff = read_yaml_file(yaml_file)
+        z_diff = get_zdiff_egolidar(yaml_file)
         print(f"Z-value difference: {z_diff:.3f}")
         
         # Read PCD file
