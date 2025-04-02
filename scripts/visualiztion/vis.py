@@ -252,7 +252,7 @@ def VisualizeOccFlowFile(file_path: str, free_label: int = FREE_LABEL):
     vis_handle = CreateOccHandle(voxel_label, free_label)
 
     # Add flow to occ
-    AddFlowToVisHandle(vis_handle, occ_flow)
+    # AddFlowToVisHandle(vis_handle, occ_flow)
 
     # Place ego car
     AddCenterEgoToVisHandle(voxel_label, vis_handle)

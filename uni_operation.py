@@ -18,7 +18,7 @@ from tqdm import tqdm
 FREE_LABEL = 10  # Free space label
 
 # Label mapping dictionary
-OPV2V_TO_OURS_LABEL_MAPPING = {
+OLD_OPV2V_TO_OURS_LABEL_MAPPING = {
     0: 10,  # unlabeled -> FREE
     1: 9,   # Building -> BUILDING
     2: 0,   # Fence -> GENERAL_OBJECT
@@ -43,6 +43,34 @@ OPV2V_TO_OURS_LABEL_MAPPING = {
     21: 10, # unlabeled -> FREE
     22: 8   # Terrain -> WALKABLE/TERRAIN
 }
+
+OPV2V_TO_OURS_LABEL_MAPPING = {
+    0: 10,  # unlabeled -> GENERAL_OBJECT
+    1: 9,   # Building -> BUILDING
+    2: 0,   # Fence -> GENERAL_OBJECT
+    3: 0,  # unlabeled -> GENERAL_OBJECT
+    4: 0,  # unlabeled -> GENERAL_OBJECT
+    5: 0,   # Pole -> GENERAL_OBJECT
+    6: 7,   # Road -> ROAD
+    7: 7,   # Road -> ROAD
+    8: 8,   # SideWalk -> WALKABLE/TERRAIN
+    9: 6,   # Vegetation -> VEGETATION
+    10: 1,  # Vehicles -> VEHICLE
+    11: 9,  # Wall -> BUILDING
+    12: 0,  # TrafficSign -> GENERAL_OBJECT
+    13: 0, # unlabeled -> GENERAL_OBJECT
+    14: 8,  # Ground -> WALKABLE/TERRAIN
+    15: 0,  # Bridge -> GENERAL_OBJECT
+    16: 0, # unlabeled -> GENERAL_OBJECT
+    17: 0,  # GuardRail -> GENERAL_OBJECT
+    18: 0,  # Pole -> GENERAL_OBJECT
+    19: 0, # unlabeled -> GENERAL_OBJECT
+    20: 1,  # Vehicles -> VEHICLE
+    21: 0, # unlabeled -> GENERAL_OBJECT
+    22: 8   # Terrain -> WALKABLE/TERRAIN
+}
+
+
 
 def setup_logging(output_root, verbose=False):
     """Setup logging configuration"""
