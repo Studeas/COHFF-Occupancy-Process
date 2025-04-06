@@ -8,7 +8,7 @@ from pathlib import Path
 import shutil
 import math
 from scripts.operation.crop_transform import crop_pcd, read_pcd_file, get_zdiff_egolidar, write_pcd_file
-from scripts.operation.old_compute_occ_flow import compute_occ_flow
+from scripts.operation.compute_occ_flow import compute_occ_flow
 from scripts.operation.voxelization import voxelize_point_cloud as voxelization
 import argparse
 from pyquaternion import Quaternion
@@ -220,6 +220,11 @@ def process_frame(frame_yaml_path, frame_pcd_path, next_yaml_path=None, next_pcd
         occ_label = remap_labels(occ_label)
           
 
+
+
+
+
+
         # TODO 3: Compute occ_flow, occ_mask_lidar, occ_mask_camera, numpy array
         occ_flow_forward = np.zeros((200, 200, 16, 3), dtype=np.float32)
         occ_flow_backward = np.zeros((200, 200, 16, 3), dtype=np.float32)
@@ -325,6 +330,12 @@ def process_frame(frame_yaml_path, frame_pcd_path, next_yaml_path=None, next_pcd
             os.remove(temp_npz_path)
 
             
+
+
+
+
+
+
         # 4. Extract ego_to_world_transformation_matrix from yaml(lidar frame)
         lidar_pose = frame_data.get('lidar_pose')
         if lidar_pose is None:
@@ -374,20 +385,23 @@ def process_frame(frame_yaml_path, frame_pcd_path, next_yaml_path=None, next_pcd
         if "vehicles" in frame_data:
             for token, veh in frame_data["vehicles"].items():
                 try:
-                    location = veh.get('location', [0, 0, 0])
-                    angle = veh.get('angle', [0, 0, 0])
+                    agent_locations = veh.get('location', [0, 0, 0])
+                    agent_angles = veh.get('angle', [0, 0, 0])
+                    agent_angles_rad = np.radians(np.array(agent_angles))
+                    q_agent = (Quaternion(axis=[1, 0, 0], angle=agent_angles_rad[0]) *
+                            Quaternion(axis=[0, 1, 0], angle=agent_angles_rad[1]) *
+                            Quaternion(axis=[0, 0, 1], angle=agent_angles_rad[2]))
                     
-                    # Calculate agent_to_ego transformation matrix
+                    # Calculate agent_to_ego transformation matrix using method 1
                     agent_to_ego = np.eye(4, dtype=np.float32)
-                    agent_to_ego[:3, 3] = [
-                        location[0] - x,
-                        location[1] - y,
-                        location[2] - z
-                    ]
+
+                    agent_to_ego[:3, 3] = np.linalg.inv(ego_to_world_transformation_matrix[:3, :3]) @ (np.array(agent_locations) - np.array([x, y, z]))
+                    agent_to_ego[:3, :3] = np.linalg.inv(ego_to_world_transformation_matrix[:3, :3]) @ q_agent.rotation_matrix
                     
                     # Calculate agent_to_world transformation matrix
                     agent_to_world = np.eye(4, dtype=np.float32)
-                    agent_to_world[:3, 3] = location
+                    agent_to_world[:3, 3] = agent_locations
+                    agent_to_world[:3, :3] = q_agent.rotation_matrix
                     
                     # Get vehicle dimensions
                     agent_size = np.array(veh.get("extent", [0, 0, 0]), dtype=np.float32)
@@ -462,7 +476,23 @@ def process_frame(frame_yaml_path, frame_pcd_path, next_yaml_path=None, next_pcd
         
         if verbose:
             logging.info(f"Successfully processed frame {os.path.basename(frame_yaml_path)}")
-        return (occ_label, occ_flow_forward, occ_flow_backward, occ_mask_lidar, occ_mask_camera, 
+        
+
+
+        # 8. occ_label translation down 2 cells
+        new_occ_label = np.ones_like(occ_label) * FREE_LABEL
+        new_occ_label[:, :, 2:14] = occ_label[:, :, 4:]
+        
+        # 8.1 occ_flow translation down 2 cells
+        new_occ_flow_backward = np.zeros_like(occ_flow_backward)
+        new_occ_flow_forward = np.zeros_like(occ_flow_forward)
+        new_occ_flow_backward[:, :, 2:14, :] = occ_flow_backward[:, :, 4:, :]
+        new_occ_flow_forward[:, :, 2:14, :] = occ_flow_forward[:, :, 4:, :]
+        
+        
+        
+        
+        return (new_occ_label, new_occ_flow_forward, new_occ_flow_backward, occ_mask_lidar, occ_mask_camera, 
                 ego_to_world_transformation_matrix, annotations, cameras)
     
     except Exception as e:
@@ -502,8 +532,8 @@ def save_npz(data_tuple, npz_path, verbose=False):
 def process_scene_vehicle(vehicle_dir, output_dir, verbose=False):
     """Process data for a single scene"""
     # Get scene name and ego name
-    scene_name = f"scene_{os.path.basename(os.path.dirname(vehicle_dir))}"  # e.g. scene_2021_08_20_21_48_35
-    ego_name = f"Ego{os.path.basename(vehicle_dir)}"  # e.g. Ego2149
+    scene_name = f"{os.path.basename(os.path.dirname(vehicle_dir))}"  # e.g. 2021_08_20_21_48_35
+    ego_name = f"{os.path.basename(vehicle_dir)}"  # e.g. 2149
 
     # Create necessary directories
     ego_dir = os.path.join(output_dir, scene_name, ego_name)
@@ -531,6 +561,11 @@ def process_scene_vehicle(vehicle_dir, output_dir, verbose=False):
         semantic_pcd_file = os.path.join(vehicle_dir, f"{base_name}_semantic_occluded.pcd")
         if os.path.exists(semantic_pcd_file):
             semantic_pcd_files.append(semantic_pcd_file)
+
+
+    img_path_list = [os.path.join(vehicle_dir, f"{base_name}_cam_name{i}.png") for i in range(4)]
+
+
 
     if verbose:
         logging.info(f"Found {len(semantic_pcd_files)} valid PCD-YAML pairs")
@@ -565,6 +600,7 @@ def process_scene_vehicle(vehicle_dir, output_dir, verbose=False):
         # core process
         # Process frame with previous and next frame information
         # take frame_yaml_path, frame_pcd_path, next_yaml_path, next_pcd_path, prev_yaml_path, prev_pcd_path as input
+        
         result = process_frame(
             frame_yaml_path, 
             frame_pcd_path,
@@ -599,17 +635,19 @@ def process_scene_vehicle(vehicle_dir, output_dir, verbose=False):
             continue
             
         # Copy camera images
-        img_path = os.path.join(vehicle_dir, f"{base_name}.jpg")
-        if os.path.exists(img_path):
-            try:
-                shutil.copy2(img_path, os.path.join(ego_dir, f"{base_name}.jpg"))
-                if verbose:
-                    logging.info(f"Successfully copied image: {img_path}")
-            except Exception as e:
-                logging.error(f"Failed to copy image {img_path}: {str(e)}")
-                continue
-        else:
-            logging.warning(f"Image file not found: {img_path}")
+        # img_path = os.path.join(vehicle_dir, f"{base_name}.png")
+        img_paths = [os.path.join(vehicle_dir, f"{base_name}_camera{i}.png") for i in range(4)]
+        for img_path in img_paths:
+            if os.path.exists(img_path):
+                try:
+                    shutil.copy2(img_path, os.path.join(ego_dir, os.path.basename(img_path)))
+                    if verbose:
+                        logging.info(f"Successfully copied image: {img_path} to {ego_dir}")
+                except Exception as e:
+                    logging.error(f"Failed to copy image {img_path}: {str(e)}")
+                    continue
+            else:
+                logging.warning(f"Image file not found: {img_path}")
     
     if verbose:
         logging.info(f"Finished processing scene: {vehicle_dir}")
@@ -706,7 +744,7 @@ def main():
 def debugger_main():
     # 硬编码的路径参数
     input_root = "C:/Users/TUF/Desktop/backup/data_example/validate"
-    output_root = "C:/Users/TUF/Desktop/backup/data_example/COHFF-val"
+    output_root = "C:/Users/TUF/Desktop/backup/data_example/COHFF-val4"
     verbose = True  # 设置为True以启用详细日志
     
     # 设置日志

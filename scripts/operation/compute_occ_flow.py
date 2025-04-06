@@ -16,7 +16,8 @@ def read_yaml_file(yaml_path, verbose=False):
             logging.error(f"Error processing YAML file {yaml_path}: {str(e)}")
         return None
 
-def compute_flow(current_yaml_path, next_yaml_path, voxel_npz_path, verbose=False):
+
+def compute_flow(current_yaml_path, target_yaml_path, voxel_npz_path, verbose=False):
     """
     Compute flow (flow field) between adjacent frames using vectorized operations.
 
@@ -33,7 +34,7 @@ def compute_flow(current_yaml_path, next_yaml_path, voxel_npz_path, verbose=Fals
     try:
         # Load YAML data for current and next frames
         current_data = read_yaml_file(current_yaml_path, verbose)
-        next_data = read_yaml_file(next_yaml_path, verbose)
+        next_data = read_yaml_file(target_yaml_path, verbose)
         if current_data is None or next_data is None:
             return None, None, None, None
 
@@ -44,7 +45,7 @@ def compute_flow(current_yaml_path, next_yaml_path, voxel_npz_path, verbose=Fals
             return None, None, None, None
         if 'lidar_pose' not in next_data or len(next_data['lidar_pose']) < 6:
             if verbose:
-                logging.error(f"Error: Next YAML file missing or invalid lidar_pose. File: {next_yaml_path}")
+                logging.error(f"Error: Next YAML file missing or invalid lidar_pose. File: {target_yaml_path}")
             return None, None, None, None
 
         current_ego_pose = current_data['lidar_pose']
@@ -94,11 +95,33 @@ def compute_flow(current_yaml_path, next_yaml_path, voxel_npz_path, verbose=Fals
         coords_hom_flat = coords_hom.reshape(N, 4)  # (N,4)
         coords_xyz_flat = coords_hom_flat[:, :3]  # (N,3)
 
-        # 向量化计算静态流
-        static_forward_coords = (static_forward_transform @ coords_hom_flat.T).T  # (N,4)
-        static_backward_coords = (static_backward_transform @ coords_hom_flat.T).T  # (N,4)
-        static_flow_forward_flat = static_forward_coords[:, :3] - coords_xyz_flat  # (N,3)
-        static_flow_backward_flat = static_backward_coords[:, :3] - coords_xyz_flat  # (N,3)
+        # 准备静态流结果数组，先全部初始化为0
+        static_flow_forward_flat = np.zeros((N, 3), dtype=np.float32)
+        static_flow_backward_flat = np.zeros((N, 3), dtype=np.float32)
+
+        # 创建非 FREE 区域的掩码
+        FREE_LABEL = 10
+        occ_label_flat = occ_label.reshape(N)
+        non_free_mask = occ_label_flat != FREE_LABEL
+
+
+        # # 向量化计算静态流
+        # static_forward_coords = (static_forward_transform @ coords_hom_flat.T).T  # (N,4)
+        # static_backward_coords = (static_backward_transform @ coords_hom_flat.T).T  # (N,4)
+        # static_flow_forward_flat = static_forward_coords[:, :3] - coords_xyz_flat  # (N,3)
+        # static_flow_backward_flat = static_backward_coords[:, :3] - coords_xyz_flat  # (N,3)
+
+        # 仅对非 FREE 的体素计算 static flow
+        if np.any(non_free_mask):
+            # 计算正向 static flow
+            static_forward_coords = (static_forward_transform @ coords_hom_flat[non_free_mask].T).T  # (n,4)
+            static_flow_forward_flat[non_free_mask] = static_forward_coords[:, :3] - coords_xyz_flat[non_free_mask]
+
+            # 计算反向 static flow
+            static_backward_coords = (static_backward_transform @ coords_hom_flat[non_free_mask].T).T  # (n,4)
+            static_flow_backward_flat[non_free_mask] = static_backward_coords[:, :3] - coords_xyz_flat[non_free_mask]
+
+        # 将静态流重新 reshape 成 (200,200,16,3)
         static_flow_forward = static_flow_forward_flat.reshape(200, 200, 16, 3)
         static_flow_backward = static_flow_backward_flat.reshape(200, 200, 16, 3)
 
@@ -181,11 +204,11 @@ def compute_flow(current_yaml_path, next_yaml_path, voxel_npz_path, verbose=Fals
         logging.error(f"Error computing flow: {str(e)}")
         return None, None, None, None
 
-def compute_occ_flow(current_yaml_path, next_yaml_path, voxel_npz_path, verbose=False):
+def compute_occ_flow(current_yaml_path, target_yaml_path, voxel_npz_path, verbose=False):
     """
     Compute occupancy flow between adjacent frames.
     """
-    result = compute_flow(current_yaml_path, next_yaml_path, voxel_npz_path, verbose)
+    result = compute_flow(current_yaml_path, target_yaml_path, voxel_npz_path, verbose)
     return result
 
 if __name__ == "__main__":
