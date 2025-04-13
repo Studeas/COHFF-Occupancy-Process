@@ -45,7 +45,7 @@ OLD_OPV2V_TO_OURS_LABEL_MAPPING = {
 }
 
 OPV2V_TO_OURS_LABEL_MAPPING = {
-    0: 10,  # unlabeled -> GENERAL_OBJECT
+    0: 10,  # unlabeled -> FREE
     1: 9,   # Building -> BUILDING
     2: 0,   # Fence -> GENERAL_OBJECT
     3: 0,  # unlabeled -> GENERAL_OBJECT
@@ -218,11 +218,6 @@ def process_frame(frame_yaml_path, frame_pcd_path, next_yaml_path=None, next_pcd
             
         # 2.1 Remap labels
         occ_label = remap_labels(occ_label)
-          
-
-
-
-
 
 
         # TODO 3: Compute occ_flow, occ_mask_lidar, occ_mask_camera, numpy array
@@ -336,7 +331,7 @@ def process_frame(frame_yaml_path, frame_pcd_path, next_yaml_path=None, next_pcd
 
 
 
-        # 4. Extract ego_to_world_transformation_matrix from yaml(lidar frame)
+        # 4. Extract ego_to_world_transformation from yaml(lidar frame)
         lidar_pose = frame_data.get('lidar_pose')
         if lidar_pose is None:
             logging.error(f"YAML file missing lidar_pose: {frame_yaml_path}")
@@ -360,9 +355,9 @@ def process_frame(frame_yaml_path, frame_pcd_path, next_yaml_path=None, next_pcd
                 logging.info(f"Successfully got ego pose (lidar frame): position=[{x}, {y}, {z}], orientation=[{roll}, {pitch}, {yaw}]")
             
             # Build complete transformation matrix
-            ego_to_world_transformation_matrix = np.eye(4, dtype=np.float32)
+            ego_to_world_transformation = np.eye(4, dtype=np.float32)
             # Set translation
-            ego_to_world_transformation_matrix[:3, 3] = [x, y, z]
+            ego_to_world_transformation[:3, 3] = [x, y, z]
             # Set rotation (using Euler angles)
             # Convert angles to radians
             roll_rad = np.radians(roll)
@@ -372,7 +367,7 @@ def process_frame(frame_yaml_path, frame_pcd_path, next_yaml_path=None, next_pcd
             q = Quaternion(axis=[1, 0, 0], angle=roll_rad) * \
                 Quaternion(axis=[0, 1, 0], angle=pitch_rad) * \
                 Quaternion(axis=[0, 0, 1], angle=yaw_rad)
-            ego_to_world_transformation_matrix[:3, :3] = q.rotation_matrix
+            ego_to_world_transformation[:3, :3] = q.rotation_matrix
         except Exception as e:
             logging.error(f"Failed to process lidar_pose: {str(e)}")
             logging.error(f"lidar_pose content: {lidar_pose}")
@@ -395,8 +390,8 @@ def process_frame(frame_yaml_path, frame_pcd_path, next_yaml_path=None, next_pcd
                     # Calculate agent_to_ego transformation matrix using method 1
                     agent_to_ego = np.eye(4, dtype=np.float32)
 
-                    agent_to_ego[:3, 3] = np.linalg.inv(ego_to_world_transformation_matrix[:3, :3]) @ (np.array(agent_locations) - np.array([x, y, z]))
-                    agent_to_ego[:3, :3] = np.linalg.inv(ego_to_world_transformation_matrix[:3, :3]) @ q_agent.rotation_matrix
+                    agent_to_ego[:3, 3] = np.linalg.inv(ego_to_world_transformation[:3, :3]) @ (np.array(agent_locations) - np.array([x, y, z]))
+                    agent_to_ego[:3, :3] = np.linalg.inv(ego_to_world_transformation[:3, :3]) @ q_agent.rotation_matrix
                     
                     # Calculate agent_to_world transformation matrix
                     agent_to_world = np.eye(4, dtype=np.float32)
@@ -481,7 +476,8 @@ def process_frame(frame_yaml_path, frame_pcd_path, next_yaml_path=None, next_pcd
 
         # 8. occ_label translation down 2 cells
         new_occ_label = np.ones_like(occ_label) * FREE_LABEL
-        new_occ_label[:, :, 2:14] = occ_label[:, :, 4:]
+        # new_occ_label[:, :, 2:14] = occ_label[:, :, 4:]
+        new_occ_label = occ_label
         
         # 8.1 occ_flow translation down 2 cells
         new_occ_flow_backward = np.zeros_like(occ_flow_backward)
@@ -493,7 +489,7 @@ def process_frame(frame_yaml_path, frame_pcd_path, next_yaml_path=None, next_pcd
         
         
         return (new_occ_label, new_occ_flow_forward, new_occ_flow_backward, occ_mask_lidar, occ_mask_camera, 
-                ego_to_world_transformation_matrix, annotations, cameras)
+                ego_to_world_transformation, annotations, cameras)
     
     except Exception as e:
         logging.error(f"Error processing frame {frame_yaml_path}: {str(e)}")
@@ -502,8 +498,7 @@ def process_frame(frame_yaml_path, frame_pcd_path, next_yaml_path=None, next_pcd
 def save_npz(data_tuple, npz_path, verbose=False):
     """Save NPZ file"""
     try:
-        (occ_label, occ_flow_forward, occ_flow_backward, occ_mask_lidar, occ_mask_camera, 
-         ego_to_world_transformation_matrix, annotations, cameras) = data_tuple
+        (occ_label, occ_flow_forward, occ_flow_backward, occ_mask_lidar, occ_mask_camera, ego_to_world_transformation, annotations, cameras) = data_tuple
         
         save_dict = {
             'occ_label': occ_label,
@@ -511,7 +506,7 @@ def save_npz(data_tuple, npz_path, verbose=False):
             'occ_flow_backward': occ_flow_backward,
             'occ_mask_lidar': occ_mask_lidar,
             'occ_mask_camera': occ_mask_camera,
-            'ego_to_world_transformation_matrix': ego_to_world_transformation_matrix,
+            'ego_to_world_transformation': ego_to_world_transformation,
             'annotations': annotations
         }
         
@@ -659,12 +654,9 @@ def process_scene_vehicle(vehicle_dir, output_dir, verbose=False):
 def main():
     # Add command line argument parsing
     parser = argparse.ArgumentParser(description='Process OPV2V dataset and generate voxelized data')
-    parser.add_argument('--input_root', type=str, required=True,
-                      help='Input data root directory containing multiple scene folders')
-    parser.add_argument('--output_root', type=str, required=True,
-                      help='Output data root directory where CoHFF format data will be generated')
-    parser.add_argument('--verbose', action='store_true',
-                      help='Enable verbose logging')
+    parser.add_argument('--input_root', type=str, required=True, help='Input data root directory containing multiple scene folders')
+    parser.add_argument('--output_root', type=str, required=True, help='Output data root directory where CoHFF format data will be generated')
+    parser.add_argument('--verbose', action='store_true', help='Enable verbose logging')
     args = parser.parse_args()
     
     # Configure paths
@@ -743,8 +735,10 @@ def main():
 
 def debugger_main():
     # 硬编码的路径参数
-    input_root = "C:/Users/TUF/Desktop/backup/data_example/validate"
-    output_root = "C:/Users/TUF/Desktop/backup/data_example/COHFF-val4"
+    # input_root = "C:/Users/TUF/Desktop/backup/data_example/validate"
+    input_root = "/Users/xiaokangsun/Documents/data_example/validate" # MacBook
+    # output_root = "C:/Users/TUF/Desktop/backup/data_example/COHFF-val4"
+    output_root = "/Users/xiaokangsun/Documents/data_example/COHFF-val6" # MacBook
     verbose = True  # 设置为True以启用详细日志
     
     # 设置日志
@@ -770,10 +764,11 @@ def debugger_main():
     # 创建场景处理进度条
     scene_pbar = tqdm(vehicle_dirs, desc="Processing scenes", disable=verbose)
     
-    for vehicle_dir in scene_pbar:
-        scene_path = os.path.join(input_root, vehicle_dir)
+    for current_scene_dir in scene_pbar:
+        scene_path = os.path.join(input_root, current_scene_dir)
+        scene_name = current_scene_dir
         if verbose:
-            logging.info(f"\nProcessing scene: {vehicle_dir}")
+            logging.info(f"\nProcessing scene: {current_scene_dir}")
         
         # 处理该场景中的所有车辆
         all_ego_info = []
@@ -784,24 +779,24 @@ def debugger_main():
         vehicle_dirs = [d for d in os.listdir(scene_path) if os.path.isdir(os.path.join(scene_path, d))]
         
         for vehicle_id in vehicle_dirs:
-            vehicle_dir = os.path.join(scene_path, vehicle_id)
+            current_scene_dir = os.path.join(scene_path, vehicle_id)
 
             # 核心处理
-            ego_info, frames_processed, frames_skipped = process_scene_vehicle(vehicle_dir, output_root, verbose)
+            ego_info, frames_processed, frames_skipped = process_scene_vehicle(current_scene_dir, output_root, verbose)
             all_ego_info.append(ego_info)
             total_frames_processed += frames_processed
             total_frames_skipped += frames_skipped
         
         # 添加场景信息（用于pkl文件）
         scene_info = {
-            "scene_name": vehicle_dir,
+            "scene_name": scene_name,
             "egos": all_ego_info
         }
         all_scene_infos.append(scene_info)
         total_scenes_processed += 1
         
         if verbose:
-            logging.info(f"\nScene {vehicle_dir} processing complete:")
+            logging.info(f"\nScene {scene_name} processing complete:")
             logging.info(f"- Number of vehicles: {len(vehicle_dirs)}")
             logging.info(f"- Total frames processed: {total_frames_processed}")
             logging.info(f"- Total frames skipped: {total_frames_skipped}")
@@ -818,5 +813,5 @@ def debugger_main():
 
 
 if __name__ == "__main__":
-    # debugger_main()
-    main()
+    debugger_main()
+    # main()

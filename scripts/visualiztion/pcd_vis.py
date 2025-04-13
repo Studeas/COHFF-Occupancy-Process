@@ -287,8 +287,8 @@ def read_pcd_file(pcd_path):
 
 if __name__ == "__main__":
     # Set file paths
-    pcd_path = r"C:\Users\TUF\Desktop\opv2v_process\single_data_example\2021_08_18_19_48_05\1045_cropped\000068_semantic_occluded.pcd"
-    yaml_path = r"C:\Users\TUF\Desktop\opv2v_process\single_data_example\2021_08_18_19_48_05\1045\000068.yaml"
+    pcd_path = r"/Users/xiaokangsun/Documents/data_example/validate/2021_08_18_19_48_05/1045/000070_semantic_occluded.pcd"
+    yaml_path = r"/Users/xiaokangsun/Documents/data_example/validate/2021_08_18_19_48_05/1045/000070.yaml"
     
     # Read point cloud data and labels
     points, labels = read_pcd_file(pcd_path)
