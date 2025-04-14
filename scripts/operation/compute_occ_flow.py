@@ -4,6 +4,7 @@ import os
 import logging
 from pyquaternion import Quaternion
 from tqdm import tqdm  # 用于显示进度条
+from scipy.spatial import ConvexHull
 
 def read_yaml_file(yaml_path, verbose=False):
     """Read YAML file and return parsed data"""
@@ -15,6 +16,64 @@ def read_yaml_file(yaml_path, verbose=False):
         if verbose:
             logging.error(f"Error processing YAML file {yaml_path}: {str(e)}")
         return None
+
+def get_voxel_coordinates(grid_min, grid_max, grid_resolution, transform_agent_to_ego, size):
+    """
+    Calculate the voxel coordinates (occ space) occupied by a bounding box in a 3D grid.
+
+    Parameters:
+    - grid_min: np.array of shape (3,), the minimum bound of the grid in world space.
+    - grid_max: np.array of shape (3,), the maximum bound of the grid in world space.
+    - grid_resolution: Float, size of each voxel in real-world units.
+    - transform_agent_to_ego: np.array of shape (4, 4) transformation of the bounding box center.
+    - size: np.array of shape (3,), dimensions of the bounding box along its local axes. l, w, h
+
+    Returns:
+    - voxel_coordinates: [n, 3] np.array of voxel indices occupied by the bounding box
+    """
+    # Step 1: Define the 8 corners of the bounding box in its local frame
+    dx, dy, dz = size / 2.0
+    corners = np.array([
+        [-dx, -dy, -dz], [-dx, -dy, dz], [-dx, dy, -dz], [-dx, dy, dz],
+        [dx, -dy, -dz], [dx, -dy, dz], [dx, dy, -dz], [dx, dy, dz]
+    ])
+
+    # Step 2: Transform corners to ego frame
+    corners_homo = np.concatenate([corners, np.ones((corners.shape[0],1))], axis=-1)
+    transformed_corners = (transform_agent_to_ego @ corners_homo.T).T
+    transformed_corners = transformed_corners[:, :-1]
+    occ_frame_corners = transformed_corners - grid_min
+
+    # Step 3: Convert world space coordinates to voxel grid indices
+    voxel_corners = np.floor(occ_frame_corners / grid_resolution).astype(int)
+
+    # Step 4: Clip voxel indices to ensure they lie within the grid
+    grid_shape = np.ceil((grid_max - grid_min) / grid_resolution).astype(int)
+    min_corner = np.clip(np.min(voxel_corners, axis=0), 0, grid_shape - 1)
+    max_corner = np.clip(np.max(voxel_corners, axis=0), 0, grid_shape - 1)
+
+    # Step 5: Collect all voxel indices within the bounding box
+    x_range = np.arange(min_corner[0], max_corner[0] + 1)
+    y_range = np.arange(min_corner[1], max_corner[1] + 1)
+    z_range = np.arange(min_corner[2], max_corner[2] + 1)
+
+    h = np.meshgrid(x_range, y_range, z_range, indexing='ij')
+    h = np.array(h).T.reshape(-1, 3)
+
+    # Step 6: Find the convex hull formed by the corners
+    try:
+        hull = ConvexHull(voxel_corners)
+    except:
+        return [], occ_frame_corners
+
+    # Step 7: Find the voxels that lie within the hull
+    interior_points = []
+    for point in h:
+        point_center = point + grid_resolution / 2.0
+        if all([np.dot(eq[:-1], point_center) <= -eq[-1] for eq in hull.equations]):
+            interior_points.append(np.array(point))
+
+    return interior_points, occ_frame_corners
 
 
 def compute_flow(current_yaml_path, target_yaml_path, voxel_npz_path, verbose=False):
@@ -169,26 +228,73 @@ def compute_flow(current_yaml_path, target_yaml_path, voxel_npz_path, verbose=Fa
             vehicle_dyn_forward[token] = dyn_forward
             vehicle_dyn_backward[token] = dyn_backward
 
-        # 对每个车辆，根据其位置生成布尔 mask，然后批量计算动态流
+        # # 对每个车辆，根据其位置生成布尔 mask，然后批量计算动态流
+        # for token in common_vehicle_tokens:
+        #     veh_loc = veh_locations[token]  # 当前帧车辆位置，形状 (3,)
+        #     # 计算所有体素到该车辆位置的距离，形状 (N,)
+        #     dists = np.linalg.norm(coords_xyz_flat - veh_loc, axis=1)
+        #     mask = dists < 5.0  # 阈值5米
+        #     # 仅更新那些尚未分配过动态流的体素
+        #     mask = mask & (~dynamic_assigned)
+        #     if np.any(mask):
+        #         # 正向动态流
+        #         dyn_forward = vehicle_dyn_forward[token]
+        #         new_coords_forward = (dyn_forward @ coords_hom_flat[mask].T).T  # (n,4)
+        #         dyn_flow_forward = new_coords_forward[:, :3] - coords_xyz_flat[mask]
+        #         dynamic_flow_forward_flat[mask] = dyn_flow_forward
+        #         # 反向动态流
+        #         dyn_backward = vehicle_dyn_backward[token]
+        #         new_coords_backward = (dyn_backward @ coords_hom_flat[mask].T).T
+        #         dyn_flow_backward = new_coords_backward[:, :3] - coords_xyz_flat[mask]
+        #         dynamic_flow_backward_flat[mask] = dyn_flow_backward
+        #         dynamic_assigned[mask] = True
+        
+        # 网格信息
+        grid_min = np.array([-40.0, -40.0, -3.2])   # (200,200,16)*0.4 spacing
+        grid_max = np.array([40.0, 40.0, 3.2])
+        grid_resolution = 0.4
+
+        # 对每个车辆，基于其3D包围盒计算 mask
         for token in common_vehicle_tokens:
-            veh_loc = veh_locations[token]  # 当前帧车辆位置，形状 (3,)
-            # 计算所有体素到该车辆位置的距离，形状 (N,)
-            dists = np.linalg.norm(coords_xyz_flat - veh_loc, axis=1)
-            mask = dists < 5.0  # 阈值5米
-            # 仅更新那些尚未分配过动态流的体素
+            veh_curr = current_vehicles[token]
+            size = np.array(veh_curr.get('size', [4.5, 2.0, 1.8]))  # 长宽高，默认值可以按你数据调整
+            T_agent_to_ego = np.eye(4)
+            T_agent_to_ego[:3, :3] = (Quaternion(axis=[1, 0, 0], angle=np.radians(veh_curr['angle'][0])) *
+                                    Quaternion(axis=[0, 1, 0], angle=np.radians(veh_curr['angle'][1])) *
+                                    Quaternion(axis=[0, 0, 1], angle=np.radians(veh_curr['angle'][2]))).rotation_matrix
+            T_agent_to_ego[:3, 3] = np.array(veh_curr['location'])
+
+            # 获取该车辆包围盒所占体素坐标
+            voxel_indices, _ = get_voxel_coordinates(grid_min, grid_max, grid_resolution, T_agent_to_ego, size)
+            if len(voxel_indices) == 0:
+                continue
+
+            # 将体素索引转换为 flat index
+            voxel_indices = np.array(voxel_indices)
+            x_idx, y_idx, z_idx = voxel_indices[:, 0], voxel_indices[:, 1], voxel_indices[:, 2]
+            flat_idx = x_idx * 200 * 16 + y_idx * 16 + z_idx
+            flat_idx = flat_idx[(flat_idx >= 0) & (flat_idx < N)]  # 防越界
+
+            # 掩码
+            mask = np.zeros(N, dtype=bool)
+            mask[flat_idx] = True
             mask = mask & (~dynamic_assigned)
-            if np.any(mask):
-                # 正向动态流
-                dyn_forward = vehicle_dyn_forward[token]
-                new_coords_forward = (dyn_forward @ coords_hom_flat[mask].T).T  # (n,4)
-                dyn_flow_forward = new_coords_forward[:, :3] - coords_xyz_flat[mask]
-                dynamic_flow_forward_flat[mask] = dyn_flow_forward
-                # 反向动态流
-                dyn_backward = vehicle_dyn_backward[token]
-                new_coords_backward = (dyn_backward @ coords_hom_flat[mask].T).T
-                dyn_flow_backward = new_coords_backward[:, :3] - coords_xyz_flat[mask]
-                dynamic_flow_backward_flat[mask] = dyn_flow_backward
-                dynamic_assigned[mask] = True
+            if not np.any(mask):
+                continue
+
+            # 正向动态流
+            dyn_forward = vehicle_dyn_forward[token]
+            new_coords_forward = (dyn_forward @ coords_hom_flat[mask].T).T
+            dyn_flow_forward = new_coords_forward[:, :3] - coords_xyz_flat[mask]
+            dynamic_flow_forward_flat[mask] = dyn_flow_forward
+
+            # 反向动态流
+            dyn_backward = vehicle_dyn_backward[token]
+            new_coords_backward = (dyn_backward @ coords_hom_flat[mask].T).T
+            dyn_flow_backward = new_coords_backward[:, :3] - coords_xyz_flat[mask]
+            dynamic_flow_backward_flat[mask] = dyn_flow_backward
+
+            dynamic_assigned[mask] = True
 
         # 将动态流重新 reshape 成 (200,200,16,3)
         dynamic_flow_forward = dynamic_flow_forward_flat.reshape(200, 200, 16, 3)

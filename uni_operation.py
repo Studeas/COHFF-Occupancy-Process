@@ -166,7 +166,7 @@ def construct_surround_sensor_fov_mask(occ_label, free_label, sensor_voxel_coord
 
     return fov_mask
 
-def process_frame(frame_yaml_path, frame_pcd_path, next_yaml_path=None, next_pcd_path=None, prev_yaml_path=None, prev_pcd_path=None, verbose=False):
+def process_frame(frame_yaml_path, frame_pcd_path, next_yaml_path=None, next_pcd_path=None, prev_yaml_path=None, prev_pcd_path=None, verbose=False, scene_name=None, ego_name=None):
     """Process single frame data"""
     if verbose:
         logging.info(f"Processing frame: {os.path.basename(frame_yaml_path)}")
@@ -450,7 +450,7 @@ def process_frame(frame_yaml_path, frame_pcd_path, next_yaml_path=None, next_pcd
                 
                 # Generate image filename
                 base_name = os.path.splitext(os.path.basename(frame_yaml_path))[0]
-                filename = f"{base_name}_{cam_name}.jpg"
+                filename = f"{scene_name}/{ego_name}/{base_name}_{cam_name}.jpg"  # 格式如: 2021_08_18_19_48_05/1045/000068_camera1.jpg
                 
                 cam_data = {
                     'cam_name': cam_name,
@@ -477,13 +477,22 @@ def process_frame(frame_yaml_path, frame_pcd_path, next_yaml_path=None, next_pcd
         # 8. occ_label translation down 2 cells
         new_occ_label = np.ones_like(occ_label) * FREE_LABEL
         # new_occ_label[:, :, 2:14] = occ_label[:, :, 4:]
-        new_occ_label = occ_label
+
+        new_occ_label[:, :, 2:] = occ_label[:, :, :14] # debugging
+        # new_occ_label = occ_label # debugging
         
         # 8.1 occ_flow translation down 2 cells
         new_occ_flow_backward = np.zeros_like(occ_flow_backward)
         new_occ_flow_forward = np.zeros_like(occ_flow_forward)
-        new_occ_flow_backward[:, :, 2:14, :] = occ_flow_backward[:, :, 4:, :]
-        new_occ_flow_forward[:, :, 2:14, :] = occ_flow_forward[:, :, 4:, :]
+        # new_occ_flow_backward[:, :, 2:14, :] = occ_flow_backward[:, :, 4:, :]
+        # new_occ_flow_forward[:, :, 2:14, :] = occ_flow_forward[:, :, 4:, :]
+
+        new_occ_flow_backward[:, :, 2:, :] = occ_flow_backward[:, :, :14, :] # debugging
+        new_occ_flow_forward[:, :, 2:, :] = occ_flow_forward[:, :, :14, :] # debugging
+
+        # new_occ_flow_backward = occ_flow_backward # debugging
+        # new_occ_flow_forward = occ_flow_forward # debugging
+
         
         
         
@@ -507,14 +516,15 @@ def save_npz(data_tuple, npz_path, verbose=False):
             'occ_mask_lidar': occ_mask_lidar,
             'occ_mask_camera': occ_mask_camera,
             'ego_to_world_transformation': ego_to_world_transformation,
-            'annotations': annotations
+            'annotations': annotations,
+            "cameras": cameras
         }
         
-        for cam_idx, cam_data in enumerate(cameras):
-            save_dict[f'camera{cam_idx}_name'] = cam_data['cam_name']
-            save_dict[f'camera{cam_idx}_filename'] = cam_data['filename']
-            save_dict[f'camera{cam_idx}_intrinsics'] = cam_data['intrinsics']
-            save_dict[f'camera{cam_idx}_extrinsics'] = cam_data['extrinsics']
+        # for cam_idx, cam_data in enumerate(cameras):
+        #     save_dict[f'camera{cam_idx}_name'] = cam_data['cam_name']
+        #     save_dict[f'camera{cam_idx}_filename'] = cam_data['filename']
+        #     save_dict[f'camera{cam_idx}_intrinsics'] = cam_data['intrinsics']
+        #     save_dict[f'camera{cam_idx}_extrinsics'] = cam_data['extrinsics']
         
         np.savez_compressed(npz_path, **save_dict)
         if verbose:
@@ -603,7 +613,9 @@ def process_scene_vehicle(vehicle_dir, output_dir, verbose=False):
             next_pcd_path=next_pcd_path,
             prev_yaml_path=prev_yaml_path,
             prev_pcd_path=prev_pcd_path,
-            verbose=verbose
+            verbose=verbose,
+            scene_name=scene_name,
+            ego_name=ego_name
         )
         
         if result is None:
@@ -735,10 +747,10 @@ def main():
 
 def debugger_main():
     # 硬编码的路径参数
-    # input_root = "C:/Users/TUF/Desktop/backup/data_example/validate"
-    input_root = "/Users/xiaokangsun/Documents/data_example/validate" # MacBook
-    # output_root = "C:/Users/TUF/Desktop/backup/data_example/COHFF-val4"
-    output_root = "/Users/xiaokangsun/Documents/data_example/COHFF-val6" # MacBook
+    input_root = "C:/Users/TUF/Desktop/backup/data_example/validate"
+    # input_root = "/Users/xiaokangsun/Documents/data_example/validate" # MacBook
+    output_root = "C:/Users/TUF/Desktop/backup/data_example/COHFF-val7"
+    # output_root = "/Users/xiaokangsun/Documents/data_example/COHFF-val6" # MacBook
     verbose = True  # 设置为True以启用详细日志
     
     # 设置日志

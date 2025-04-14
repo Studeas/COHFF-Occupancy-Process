@@ -1,9 +1,10 @@
 import numpy as np
 import os
+import pprint
 
 def view_npz_content(npz_path):
     """
-    View npz file content and print basic information
+    View npz file content and print complete structure
     """
     try:
         # Load npz file
@@ -13,43 +14,87 @@ def view_npz_content(npz_path):
         print(f"File path: {npz_path}")
         print(f"{'='*50}")
         
-        # Display array names and basic information
-        print("\nArrays contained:")
-        print('-'*30)
+        # 创建完整的数据结构字典
+        content_dict = {}
         for key in data.files:
             array = data[key]
-            print(f"\nArray name: {key}")
-            print(f"Shape: {array.shape}")
-            print(f"Type: {array.dtype}")
+            print(f"\n处理数组: {key}")
+            print(f"类型: {type(array)}")
             
-            # Process differently based on array type
             if key == 'annotations':
-                print("\nAnnotation content:")
+                # 处理annotations数组
+                annotations_list = []
                 for i, ann in enumerate(array):
-                    print(f"\nAnnotation {i+1}:")
-                    # 直接处理字典类型
+                    print(f"\n处理标注 {i+1}:")
+                    ann_dict = {}
                     for k, v in ann.items():
+                        print(f"  {k}: {type(v)}")
                         if isinstance(v, np.ndarray):
-                            print(f"  {k}: shape={v.shape}, range=[{v.min():.2f}, {v.max():.2f}]")
+                            ann_dict[k] = {
+                                'shape': v.shape,
+                                'dtype': str(v.dtype),
+                                'min': float(v.min()),
+                                'max': float(v.max())
+                            }
                         else:
-                            print(f"  {k}: {v}")
+                            ann_dict[k] = v
+                    annotations_list.append(ann_dict)
+                content_dict[key] = annotations_list
+            elif key == 'cameras':
+                # 处理cameras数组
+                cameras_list = []
+                for i, cam in enumerate(array):
+                    print(f"\n处理相机 {i+1}:")
+                    cam_dict = {}
+                    for k, v in cam.items():
+                        print(f"  {k}: {type(v)}")
+                        if isinstance(v, np.ndarray):
+                            cam_dict[k] = {
+                                'shape': v.shape,
+                                'dtype': str(v.dtype),
+                                'content': v.tolist()
+                            }
+                        else:
+                            cam_dict[k] = v
+                    cameras_list.append(cam_dict)
+                content_dict[key] = cameras_list
             else:
-                # For other arrays, print value ranges
+                # 处理其他数组
                 if isinstance(array, np.ndarray):
-                    if array.dtype.kind in 'ui':  # Integer type
-                        print(f"Value range: [{array.min()}, {array.max()}]")
-                    else:  # Float type
-                        print(f"Value range: [{array.min():.2f}, {array.max():.2f}]")
-            
-            print('-'*30)
+                    if array.dtype.kind in 'U':  # 字符串类型
+                        content_dict[key] = array.item()
+                    else:
+                        try:
+                            content_dict[key] = {
+                                'shape': array.shape,
+                                'dtype': str(array.dtype),
+                                'min': float(array.min()),
+                                'max': float(array.max())
+                            }
+                        except Exception as e:
+                            print(f"处理数组 {key} 时出错: {str(e)}")
+                            content_dict[key] = {
+                                'shape': array.shape,
+                                'dtype': str(array.dtype),
+                                'content': array.tolist()
+                            }
+                else:
+                    # 处理非numpy数组类型
+                    content_dict[key] = array
+        
+        # 使用pprint打印完整结构
+        print("\n完整数据结构:")
+        pprint.pprint(content_dict, width=100, depth=None)
             
     except Exception as e:
         print(f"Error: Cannot read file {npz_path}")
         print(f"Error message: {str(e)}")
+        import traceback
+        print(f"Stack trace:\n{traceback.format_exc()}")
 
 def main():
     # Set npz file path
-    npz_path = r"C:\Users\TUF\Desktop\backup\data_example\COHFF-val2\scene_2021_08_18_19_48_05\Ego1045\000068.npz"
+    npz_path = r"C:\Users\TUF\Desktop\backup\data_example\COHFF-val4\2021_08_18_19_48_05\1045\000068.npz"
     view_npz_content(npz_path)
 
 if __name__ == "__main__":
