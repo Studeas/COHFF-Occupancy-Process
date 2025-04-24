@@ -7,7 +7,7 @@ import math
 import pprint
 
 # 设置路径变量
-DATA_ROOT = r"C:\Users\TUF\Desktop\backup\data_example\COHFF-val4"
+DATA_ROOT = r"D:\COHFF-test"
 PKL_PATH = os.path.join(DATA_ROOT, "scene_infos.pkl")
 
 def load_pkl_file(pkl_path: str) -> Dict:
@@ -69,7 +69,7 @@ def visualize_scene(scene_info: Dict):
         trajectory = []
         for frame_path in ego_info['occ_in_scene_paths']:
             # Extract position from transformation matrix
-            transform = np.load(os.path.join(DATA_ROOT, frame_path))['ego_to_world_transformation_matrix']
+            transform = np.load(os.path.join(DATA_ROOT, frame_path))['ego_to_world_transformation']
             position = transform[:3, 3]
             trajectory.append(position)
         

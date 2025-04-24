@@ -13,6 +13,7 @@ from scripts.operation.voxelization import voxelize_point_cloud as voxelization
 import argparse
 from pyquaternion import Quaternion
 from tqdm import tqdm
+from concurrent.futures import ProcessPoolExecutor
 
 # Constants
 FREE_LABEL = 10  # Free space label
@@ -166,6 +167,37 @@ def construct_surround_sensor_fov_mask(occ_label, free_label, sensor_voxel_coord
 
     return fov_mask
 
+def _process_and_save_frame(args):
+    (frame_yaml, frame_pcd,
+     prev_yaml, prev_pcd,
+     next_yaml, next_pcd,
+     verbose, scene_name, ego_name,
+     vehicle_dir, output_dir) = args
+
+    result = process_frame(
+        frame_yaml, frame_pcd,
+        prev_yaml_path=prev_yaml, prev_pcd_path=prev_pcd,
+        next_yaml_path=next_yaml, next_pcd_path=next_pcd,
+        verbose=verbose, scene_name=scene_name, ego_name=ego_name
+    )
+    base = os.path.splitext(os.path.basename(frame_yaml))[0]
+    ego_dir = os.path.join(output_dir, scene_name, ego_name)
+
+    if result:
+        npz_path = os.path.join(ego_dir, f"{base}.npz")
+        rel_path = os.path.join(scene_name, ego_name, f"{base}.npz")
+        save_npz(result, npz_path, verbose)
+        # 复制四个相机图像
+        for i in range(4):
+            img = os.path.join(vehicle_dir, f"{base}_camera{i}.png")
+            if os.path.exists(img):
+                shutil.copy2(img, os.path.join(ego_dir, os.path.basename(img)))
+        return base, True, rel_path
+    else:
+        return base, False, None
+
+
+
 def process_frame(frame_yaml_path, frame_pcd_path, next_yaml_path=None, next_pcd_path=None, prev_yaml_path=None, prev_pcd_path=None, verbose=False, scene_name=None, ego_name=None):
     """Process single frame data"""
     if verbose:
@@ -225,7 +257,10 @@ def process_frame(frame_yaml_path, frame_pcd_path, next_yaml_path=None, next_pcd
         occ_flow_backward = np.zeros((200, 200, 16, 3), dtype=np.float32)
 
         # Create temporary file to save voxel labels (avoid repeated creation)
-        temp_npz_path = os.path.join(os.path.dirname(frame_pcd_path), "temp_voxel.npz")
+        # temp_npz_path = os.path.join(os.path.dirname(frame_pcd_path), "temp_voxel.npz")
+        base_name = os.path.splitext(os.path.basename(frame_pcd_path))[0]
+        temp_npz_path = os.path.join(os.path.dirname(frame_pcd_path), f"temp_voxel_{base_name}.npz")
+
         if not os.path.exists(temp_npz_path):
             np.savez(temp_npz_path, occ_label=occ_label)
 
@@ -535,144 +570,76 @@ def save_npz(data_tuple, npz_path, verbose=False):
         return False
 
 def process_scene_vehicle(vehicle_dir, output_dir, verbose=False):
-    """Process data for a single scene"""
+    """Process data for a single scene, with parallel frame processing."""
     # Get scene name and ego name
-    scene_name = f"{os.path.basename(os.path.dirname(vehicle_dir))}"  # e.g. 2021_08_20_21_48_35
-    ego_name = f"{os.path.basename(vehicle_dir)}"  # e.g. 2149
+    scene_name = os.path.basename(os.path.dirname(vehicle_dir))
+    ego_name = os.path.basename(vehicle_dir)
 
-    # Create necessary directories
+    # Prepare output directory
     ego_dir = os.path.join(output_dir, scene_name, ego_name)
     os.makedirs(ego_dir, exist_ok=True)
-    
     if verbose:
         logging.info(f"Processing scene: {vehicle_dir}")
-    
-    # Get all image files in the input directory
-    image_files = [f for f in os.listdir(vehicle_dir) if f.endswith('.png')]
-    if verbose:
-        logging.info(f"Found {len(image_files)} image files")
-    
-    yaml_files_names = [f for f in os.listdir(vehicle_dir) if f.endswith('.yaml')]
-    if verbose:
-        logging.info(f"Found {len(yaml_files_names)} YAML files")
-    
-    yaml_files = [os.path.join(vehicle_dir, f) for f in yaml_files_names]
 
-    # Collect PCD files and their corresponding YAML files
-    semantic_pcd_files = [] # only take semantic_occluded.pcd i
-
-    for yaml_file in yaml_files_names:
-        base_name = os.path.splitext(yaml_file)[0]
-        semantic_pcd_file = os.path.join(vehicle_dir, f"{base_name}_semantic_occluded.pcd")
-        if os.path.exists(semantic_pcd_file):
-            semantic_pcd_files.append(semantic_pcd_file)
-
+    # Gather YAML and PCD files
+    yaml_names = sorted([f for f in os.listdir(vehicle_dir) if f.endswith('.yaml')])
+    yaml_paths = [os.path.join(vehicle_dir, f) for f in yaml_names]
+    pcd_paths = [
+        os.path.join(vehicle_dir, f.replace('.yaml', '_semantic_occluded.pcd'))
+        for f in yaml_names
+    ]
+    # Filter out missing PCDs
+    pairs = [(y, p) for y, p in zip(yaml_paths, pcd_paths) if os.path.exists(p)]
     if verbose:
-        logging.info(f"Found {len(semantic_pcd_files)} valid PCD-YAML pairs")
-    
-    # Process each frame
+        logging.info(f"Found {len(pairs)} valid frame pairs")
+
+    # Initialize counters and ego_info
     frames_processed = 0
     frames_skipped = 0
+    ego_info = {"ego_name": ego_name, "occ_in_scene_paths": []}
 
-    ego_info = {
-        "ego_name": ego_name, # e.g. Ego2149
-        "occ_in_scene_paths": [] # every frame npz file path in this scene
+    # Detect already processed frames
+    processed_bases = {
+        os.path.splitext(f)[0]
+        for f in os.listdir(ego_dir) if f.endswith('.npz')
     }
-    
-    # 检查已处理的帧
-    processed_frames = set()
-    for file in os.listdir(ego_dir):
-        if file.endswith('.npz'):
-            base_name = os.path.splitext(file)[0]
-            processed_frames.add(base_name)
-            # 添加已处理的帧路径
-            relative_npz_path = os.path.join(scene_name, ego_name, f"{base_name}.npz")
-            ego_info["occ_in_scene_paths"].append(relative_npz_path)
-            frames_processed += 1
-    
+    for base in processed_bases:
+        rel = os.path.join(scene_name, ego_name, f"{base}.npz")
+        ego_info["occ_in_scene_paths"].append(rel)
+        frames_processed += 1
     if verbose:
-        logging.info(f"Found {len(processed_frames)} already processed frames")
-    
-    for i in tqdm(range(len(semantic_pcd_files)), desc="Processing frames"):
-        frame_yaml_path = yaml_files[i]
-        frame_pcd_path = semantic_pcd_files[i]
-        base_name = os.path.splitext(os.path.basename(frame_yaml_path))[0]
-        
-        # 跳过已处理的帧
-        if base_name in processed_frames:
-            if verbose:
-                logging.info(f"Skipping already processed frame: {base_name}")
-            continue
-        
-        # Get previous frame paths if not the first frame
-        prev_yaml_path = None
-        prev_pcd_path = None
-        if i > 0:
-            prev_yaml_path = yaml_files_names[i-1]
-            prev_pcd_path = semantic_pcd_files[i-1]
-        
-        # Get next frame paths if not the last frame
-        next_yaml_path = None
-        next_pcd_path = None
-        if i < len(semantic_pcd_files) - 1:
-            next_yaml_path = yaml_files[i+1]
-            next_pcd_path = semantic_pcd_files[i+1]
-        
-        # core process
-        result = process_frame(
-            frame_yaml_path, 
-            frame_pcd_path,
-            next_yaml_path=next_yaml_path,
-            next_pcd_path=next_pcd_path,
-            prev_yaml_path=prev_yaml_path,
-            prev_pcd_path=prev_pcd_path,
-            verbose=verbose,
-            scene_name=scene_name,
-            ego_name=ego_name
-        )
-        
-        if result is None:
-            logging.error(f"Failed to process frame {os.path.basename(frame_yaml_path)}")
-            frames_skipped += 1
-            continue
-            
-        # Save processed data
-        npz_path = os.path.join(ego_dir, f"{base_name}.npz")
-        relative_npz_path = os.path.join(scene_name, ego_name, f"{base_name}.npz")
-        
-        try:
-            save_npz(result, npz_path) # take absolute path as input
-            if verbose:
-                logging.info(f"Successfully saved NPZ file: {npz_path}")
-            
-            # Add frame information
-            ego_info["occ_in_scene_paths"].append(relative_npz_path)
-            frames_processed += 1
-        except Exception as e:
-            logging.error(f"Failed to save NPZ file {npz_path}: {str(e)}")
-            frames_skipped += 1
-            continue
-            
-        # Copy camera images
-        img_paths = [os.path.join(vehicle_dir, f"{base_name}_camera{i}.png") for i in range(4)]
-        for img_path in img_paths:
-            if os.path.exists(img_path):
-                try:
-                    shutil.copy2(img_path, os.path.join(ego_dir, os.path.basename(img_path)))
-                    if verbose:
-                        logging.info(f"Successfully copied image: {img_path} to {ego_dir}")
-                except Exception as e:
-                    logging.error(f"Failed to copy image {img_path}: {str(e)}")
-                    continue
-            else:
-                logging.warning(f"Image file not found: {img_path}")
-    
-    if verbose:
-        logging.info(f"Finished processing scene: {vehicle_dir}")
-    
-    # ego_info is lastly used for scene_infos.pkl
-    return ego_info, frames_processed, frames_skipped
+        logging.info(f"Skipping {len(processed_bases)} already processed frames")
 
+    # Build task list for parallel execution
+    tasks = []
+    for i, (y_path, p_path) in enumerate(pairs):
+        base = os.path.splitext(os.path.basename(y_path))[0]
+        if base in processed_bases:
+            continue
+        prev_y, prev_p = (pairs[i-1] if i > 0 else (None, None))
+        next_y, next_p = (pairs[i+1] if i < len(pairs)-1 else (None, None))
+        tasks.append((
+            y_path, p_path,
+            prev_y, prev_p,
+            next_y, next_p,
+            verbose, scene_name, ego_name,
+            vehicle_dir, output_dir
+        ))
+
+    # Execute in parallel (2 workers)
+    with ProcessPoolExecutor(max_workers=2) as executor:
+        for base, success, rel_path in executor.map(_process_and_save_frame, tasks):
+            if success:
+                ego_info["occ_in_scene_paths"].append(rel_path)
+                frames_processed += 1
+            else:
+                frames_skipped += 1
+
+    if verbose:
+        logging.info(f"Finished processing scene: {vehicle_dir} — "
+                     f"processed {frames_processed}, skipped {frames_skipped}")
+
+    return ego_info, frames_processed, frames_skipped
 
 def main():
     # 添加命令行参数解析
