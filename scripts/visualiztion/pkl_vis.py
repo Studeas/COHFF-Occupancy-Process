@@ -5,10 +5,15 @@ import os
 from typing import List, Dict
 import math
 import pprint
+import json
 
 # 设置路径变量
-DATA_ROOT = r"D:\COHFF-test"
-PKL_PATH = os.path.join(DATA_ROOT, "scene_infos.pkl")
+# DATA_ROOT = r"D:\COHFF-train_last2"
+# PKL_PATH = os.path.join(DATA_ROOT, "scene_infos.pkl")
+
+DATA_ROOT = r"D:/"
+PKL_PATH = os.path.join(DATA_ROOT, "merged_scene_info.pkl")
+
 
 def load_pkl_file(pkl_path: str) -> Dict:
     """Load pkl file containing scene information"""
@@ -128,5 +133,13 @@ def main():
     print("="*50 + "\n")
     pprint.pprint(scene_info, width=100, depth=None)
 
+    # 存储为json文件
+    DEBUG_PATH = os.path.join( "D:/", "scene_infos_merged.json")
+    with open(DEBUG_PATH, "w") as f:
+        json.dump(scene_info, f, indent=4)
+
 if __name__ == '__main__':
     main()
+
+
+ab=[1,2,3,4,5]

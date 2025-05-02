@@ -70,8 +70,6 @@ OPV2V_TO_OURS_LABEL_MAPPING = {
     22: 8   # Terrain -> WALKABLE/TERRAIN
 }
 
-
-
 def setup_logging(output_root, verbose=False):
     """Setup logging configuration"""
     log_dir = os.path.join(output_root, 'logs')
